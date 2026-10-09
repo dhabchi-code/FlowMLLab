@@ -1,8 +1,5 @@
 # Specification: boundary volume-flux diagnostic
 
-Complete and commit this document BEFORE supplying it to a coding agent.
-This is a student template; the existing `SCIENTIFIC_SPEC.md` describes the
-instructor's separate derivative-verification example.
 
 ## Physical problem
 
