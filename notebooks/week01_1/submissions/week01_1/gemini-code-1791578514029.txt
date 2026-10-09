@@ -1,0 +1,221 @@
+--- /dev/null
++++ b/flowmllab/student_mass_balance.py
+@@ -0,0 +1,77 @@
++import numpy as np
++
++
++def net_volume_flux(x: np.ndarray, y: np.ndarray, u: np.ndarray, v: np.ndarray) -> float:
++    """Compute net outward volume flux per unit depth around a 2-D rectangular domain.
++
++    Parameters
++    ----------
++    x : array_like, 1-D
++        Finite, strictly increasing x-coordinates (length Nx >= 2).
++    y : array_like, 1-D
++        Finite, strictly increasing y-coordinates (length Ny >= 2).
++    u : array_like, 2-D
++        x-velocity component of shape (Ny, Nx).
++    v : array_like, 2-D
++        y-velocity component of shape (Ny, Nx).
++
++    Returns
++    -------
++    float
++        Signed net outward volume flux calculated via composite trapezoidal quadrature.
++    """
++    x_arr = np.asarray(x, dtype=np.float64)
++    y_arr = np.asarray(y, dtype=np.float64)
++    u_arr = np.asarray(u, dtype=np.float64)
++    v_arr = np.asarray(v, dtype=np.float64)
+
++    # Check dimensionality
++    if x_arr.ndim != 1 or y_arr.ndim != 1:
++        raise ValueError("Coordinates x and y must be 1-dimensional.")
++    if u_arr.ndim != 2 or v_arr.ndim != 2:
++        raise ValueError("Velocity fields u and v must be 2-dimensional.")
+
++    # Check minimum points requirement (at least 2 points in each direction)
++    if x_arr.size < 2 or y_arr.size < 2:
++        raise ValueError("Coordinates x and y must have at least two points.")
+
++    # Check shape compatibility with u and v (field[y, x] semantics)
++    ny, nx = y_arr.size, x_arr.size
++    if u_arr.shape != (ny, nx) or v_arr.shape != (ny, nx):
++        raise ValueError(
++            f"Velocity array shape {u_arr.shape} does not match coordinate dimensions (len(y)={ny}, len(x)={nx})."
++        )
+
++    # Check for nonfinite inputs (NaNs / Infs)
++    if not (np.all(np.isfinite(x_arr)) and np.all(np.isfinite(y_arr)) and
++            np.all(np.isfinite(u_arr)) and np.all(np.isfinite(v_arr))):
++        raise ValueError("All inputs must contain finite values.")
+
++    # Check for strictly increasing coordinates (reject repeated or decreasing)
++    if np.any(np.diff(x_arr) <= 0):
++        raise ValueError("x-coordinates must be strictly increasing.")
++    if np.any(np.diff(y_arr) <= 0):
++        raise ValueError("y-coordinates must be strictly increasing.")
+
++    # Signed boundary velocity slices:
++    # Right:  +u(x_max, y) integrated along y
++    # Left:   -u(x_min, y) integrated along y
++    # Top:    +v(x, y_max) integrated along x
++    # Bottom: -v(x, y_min) integrated along x
++    u_right = u_arr[:, -1]
++    u_left = u_arr[:, 0]
++    v_top = v_arr[-1, :]
++    v_bottom = v_arr[0, :]
+
++    # Composite trapezoidal integration over boundaries
++    flux_right = np.trapezoid(u_right, y_arr)
++    flux_left = -np.trapezoid(u_left, y_arr)
++    flux_top = np.trapezoid(v_top, x_arr)
++    flux_bottom = -np.trapezoid(v_bottom, x_arr)
+
++    net_flux = flux_right + flux_left + flux_top + flux_bottom
++    return float(net_flux)
+--- /dev/null
++++ b/tests/test_student_mass_balance.py
+@@ -0,0 +1,159 @@
++import numpy as np
++import pytest
++from flowmllab.student_mass_balance import net_volume_flux
++
++
++class TestUnitFailureCases:
++    """Unit tests verifying shape, finiteness, ordering validation, and basic scalar output."""
+
++    def test_insufficient_points(self):
++        x = np.array([0.0])
++        y = np.array([0.0, 1.0])
++        u = np.zeros((2, 1))
++        v = np.zeros((2, 1))
++        with pytest.raises(ValueError, match="at least two points"):
++            net_volume_flux(x, y, u, v)
+
++    def test_incompatible_shapes(self):
++        x = np.array([0.0, 1.0])
++        y = np.array([0.0, 1.0, 2.0])
++        u = np.zeros((2, 2))  # shape is (2,2) instead of (3,2)
++        v = np.zeros((2, 2))
++        with pytest.raises(ValueError, match="does not match coordinate dimensions"):
++            net_volume_flux(x, y, u, v)
+
++    def test_nonfinite_inputs(self):
++        x = np.array([0.0, 1.0])
++        y = np.array([0.0, np.nan])
++        u = np.zeros((2, 2))
++        v = np.zeros((2, 2))
++        with pytest.raises(ValueError, match="finite values"):
++            net_volume_flux(x, y, u, v)
+
++        x_ok = np.array([0.0, 1.0])
++        y_ok = np.array([0.0, 1.0])
++        u_inf = np.array([[0.0, np.inf], [0.0, 0.0]])
++        with pytest.raises(ValueError, match="finite values"):
++            net_volume_flux(x_ok, y_ok, u_inf, v)
+
++    def test_non_increasing_coordinates(self):
++        # Decreasing coordinate
++        x_dec = np.array([1.0, 0.0])
++        y = np.array([0.0, 1.0])
++        u = np.zeros((2, 2))
++        v = np.zeros((2, 2))
++        with pytest.raises(ValueError, match="strictly increasing"):
++            net_volume_flux(x_dec, y, u, v)
+
++        # Repeated coordinate
++        x_rep = np.array([0.0, 0.0, 1.0])
++        y_3 = np.array([0.0, 0.5, 1.0])
++        u_3 = np.zeros((3, 3))
++        v_3 = np.zeros((3, 3))
++        with pytest.raises(ValueError, match="strictly increasing"):
++            net_volume_flux(x_rep, y_3, u_3, v_3)
+
++    def test_return_type_and_outward_signs(self):
++        x = np.array([0.0, 2.0])
++        y = np.array([0.0, 3.0])
++        # Outward flow on right boundary: u = +1 on right edge (x=2), 0 elsewhere
++        u = np.array([[0.0, 1.0], [0.0, 1.0]])
++        v = np.zeros((2, 2))
++        flux_right = net_volume_flux(x, y, u, v)
++        assert isinstance(flux_right, float)
++        assert pytest.approx(flux_right, abs=1e-12) == 3.0
+
++        # Inward flow on right boundary (u = -1 on right edge) -> negative net flux
++        u_inward = np.array([[0.0, -1.0], [0.0, -1.0]])
++        flux_inward = net_volume_flux(x, y, u_inward, v)
++        assert pytest.approx(flux_inward, abs=1e-12) == -3.0
+
+
++class TestPhysicalInvariants:
++    """Invariant tests: constant velocity fields and lid-driven cavity perturbation."""
+
++    def test_constant_velocity_field(self):
++        x = np.linspace(0, 5, 10)
++        y = np.linspace(0, 3, 8)
++        xx, yy = np.meshgrid(x, y)
++        u = np.full_like(xx, 4.2)
++        v = np.full_like(yy, -1.5)
++        flux = net_volume_flux(x, y, u, v)
++        assert abs(flux) <= 1e-12
+
++    def test_cavity_boundary_perturbation(self):
++        # Model closed cavity with zero boundary velocity
++        nx, ny = 20, 20
++        x = np.linspace(0, 1, nx)
++        y = np.linspace(0, 1, ny)
++        xx, yy = np.meshgrid(x, y)
++        
++        # Solenoidal internal field (Re=100 cavity mock with zero normal boundary flow)
++        u = np.sin(np.pi * xx) * np.cos(np.pi * yy)
++        v = -np.cos(np.pi * xx) * np.sin(np.pi * yy)
++        
++        flux_unperturbed = net_volume_flux(x, y, u, v)
++        assert abs(flux_unperturbed) <= 1e-12
+
++        # Perturb right boundary by adding 0.1 to u on the entire right edge
++        u_perturbed = u.copy()
++        u_perturbed[:, -1] += 0.1
++        
++        flux_perturbed = net_volume_flux(x, y, u_perturbed, v)
++        assert pytest.approx(flux_perturbed, abs=1e-12) == 0.1
+
+
++class TestBaselineAndNonuniformReference:
++    """Exact reference tests on unit, rectangular, and nonuniform grids."""
+
++    def test_unit_square_u_x_v_y(self):
++        # u = x, v = y on [0, 1] x [0, 1] -> Exact Q = 2.0
++        x = np.linspace(0, 1, 50)
++        y = np.linspace(0, 1, 50)
++        xx, yy = np.meshgrid(x, y)
++        u = xx
++        v = yy
++        flux = net_volume_flux(x, y, u, v)
++        assert pytest.approx(flux, abs=1e-12) == 2.0
+
++    def test_unit_square_u_xsq_v_0(self):
++        # u = x^2, v = 0 on [0, 1] x [0, 1] -> Exact Q = 1.0
++        x = np.linspace(0, 1, 50)
++        y = np.linspace(0, 1, 50)
++        xx, yy = np.meshgrid(x, y)
++        u = xx**2
++        v = np.zeros_like(yy)
++        flux = net_volume_flux(x, y, u, v)
++        assert pytest.approx(flux, abs=1e-12) == 1.0
+
++    def test_nonuniform_rectangular_derived_reference(self):
++        # Field: u = 3x + y, v = x + 2y
++        # Sample points specified in SPEC.md:
++        x = np.array([0.0, 0.2, 2.4, 5.0])
++        y = np.array([0.0, 0.6, 2.2, 3.2])
++        xx, yy = np.meshgrid(x, y)
++        u = 3 * xx + yy
++        v = xx + 2 * yy
++        
++        # Field components are linear along each boundary edge.
++        # Composite trapezoidal quadrature is exact for linear integrand profiles.
++        # Exact integration yields Q = 80.0.
++        flux = net_volume_flux(x, y, u, v)
++        assert pytest.approx(flux, abs=1e-12) == 80.0
